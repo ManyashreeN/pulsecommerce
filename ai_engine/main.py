@@ -1,53 +1,66 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
-from intent import detect_intent
-from response import generate_response
-from recommend import recommend_products
+# 🔥 Internal modules
+from intent import IntentDetector
 from context import ConversationContext
+from recommend import recommend_products
+from response import generate_response
 
+# =========================
+# 🚀 INIT APP
+# =========================
 app = FastAPI(title="AI Messaging Engine")
 
-# -----------------------------
-# In-memory context store (hackathon use)
-# -----------------------------
+detector = IntentDetector()
+
+# =========================
+# 🧠 CONTEXT STORE (In-memory)
+# =========================
 user_context_store: Dict[str, ConversationContext] = {}
 
-# -----------------------------
-# Request Schema
-# -----------------------------
-class UserRequest(BaseModel):
-    user_id: str
-    message: str
-    context: Dict[str, Any] = {}
-
-
-# -----------------------------
-# Helper: Get/Create Context
-# -----------------------------
 def get_user_context(user_id: str) -> ConversationContext:
     if user_id not in user_context_store:
         user_context_store[user_id] = ConversationContext()
     return user_context_store[user_id]
 
+# =========================
+# 📦 REQUEST MODEL
+# =========================
+class UserRequest(BaseModel):
+    user_id: str
+    message: str
+    context: Optional[Dict[str, Any]] = None
 
-# -----------------------------
-# MAIN API: Generate Response
-# -----------------------------
+
+# =========================
+# 🔥 MAIN API
+# =========================
 @app.post("/generate-response")
 def generate_response_api(req: UserRequest):
 
     # 1️⃣ Get user context
     context = get_user_context(req.user_id)
 
-    # 2️⃣ Detect intent + entities
-    intent, entities = detect_intent(req.message)
+    # 2️⃣ Detect intent safely
+    try:
+        intent, entities = detector.detect(
+            req.message,
+            context={"history": context.history}
+        )
+    except Exception as e:
+        print("Intent error:", e)
+        intent, entities = "fallback", {}
 
     # 3️⃣ Update context
     context.update_history(req.message, intent)
 
-    # 4️⃣ Get recommendations (if needed)
+    # limit memory (important)
+    if len(context.history) > 10:
+        context.history = context.history[-10:]
+
+    # 4️⃣ Recommendations
     product_suggestions = recommend_products(intent, entities)
 
     # 5️⃣ Generate response
@@ -58,7 +71,12 @@ def generate_response_api(req: UserRequest):
         products=product_suggestions
     )
 
-    # 6️⃣ Return response
+    # 6️⃣ Debug logs
+    print(f"[USER]: {req.message}")
+    print(f"[INTENT]: {intent}")
+    print(f"[ENTITIES]: {entities}")
+    print(f"[PRODUCTS]: {product_suggestions}")
+
     return {
         "reply": reply,
         "intent": intent,
@@ -66,13 +84,13 @@ def generate_response_api(req: UserRequest):
     }
 
 
-# -----------------------------
-# OPTIONAL: Recommendation API
-# -----------------------------
+# =========================
+# 🧪 OPTIONAL ENDPOINT
+# =========================
 @app.post("/recommend-products")
 def recommend_products_api(req: UserRequest):
 
-    intent, entities = detect_intent(req.message)
+    intent, entities = detector.detect(req.message)
     products = recommend_products(intent, entities)
 
     return {
@@ -80,9 +98,9 @@ def recommend_products_api(req: UserRequest):
     }
 
 
-# -----------------------------
-# Health Check (for testing)
-# -----------------------------
+# =========================
+# 🟢 HEALTH CHECK
+# =========================
 @app.get("/")
 def home():
     return {"message": "AI Engine is running 🚀"}
